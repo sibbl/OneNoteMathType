@@ -71,16 +71,24 @@ namespace OneNoteMathType
 
         #region Translate equations in OneNote with MathType
 
-        private static XNamespace ns;
-        public static void TranslateCurrentOneNotePage()
+        private bool _translationInProgress = false;
+        private bool _ballonErrorShown = false;
+        private XNamespace _oneNs;
+        public void TranslateCurrentOneNotePage()
         {
+            if (_translationInProgress)
+            {
+                notifyIcon1.ShowBalloonTip(5000, "Please slow down...", "MathType is still converting your page. Please try again in some seconds.", ToolTipIcon.Warning);
+                return;
+            }
             var onenoteApp = new on.Application();
+            _translationInProgress = true;
 
             string notebookXml;
             onenoteApp.GetHierarchy(null, on.HierarchyScope.hsPages, out notebookXml);
             var doc = XDocument.Parse(notebookXml);
-            ns = doc.Root.Name.Namespace;
-            var pageNode = doc.Descendants(ns + "Page").Where(n =>
+            _oneNs = doc.Root.Name.Namespace;
+            var pageNode = doc.Descendants(_oneNs + "Page").Where(n =>
               n.Attribute("isCurrentlyViewed") != null && n.Attribute("isCurrentlyViewed").Value == "true").FirstOrDefault();
             
             if (pageNode == null) return;
@@ -88,26 +96,27 @@ namespace OneNoteMathType
             
             string content;
             onenoteApp.GetPageContent(existingPageId, out content, on.PageInfo.piAll);
-
+            _ballonErrorShown = false;
             var xDoc = XDocument.Parse(content);
-            var textElements = xDoc.Descendants(ns + "T").ToList();
+            var textElements = xDoc.Descendants(_oneNs + "T").ToList();
             foreach(var item in textElements)
             {
                 if(item != null) ReplaceEquationsInXElement(item);
             }
 
             onenoteApp.UpdatePageContent(xDoc.ToString(), DateTime.MinValue);
+            _translationInProgress = false;
         }
 
-        public static string MMLStart = "<mml:math";
-        public static string MMLEnd = "</mml:math>";
+        public string MMLStart = "<mml:math";
+        public string MMLEnd = "</mml:math>";
 
-        public static void ReplaceEquationsInXElement(XElement content)
+        public void ReplaceEquationsInXElement(XElement content)
         {
             var equationParts = content.Value.Split(new string[] { EquationStartEndString }, StringSplitOptions.None);
             if (equationParts.Count() < 2) return;
 
-            var newContent = new StringBuilder();
+            var newElements = new List<XElement>();
             var count = equationParts.Count();
             var isEquation = true; //set true, which will be set false before checking first item
             var isUnfinishedEquation = false;
@@ -121,22 +130,28 @@ namespace OneNoteMathType
                 if (isEquation && !isUnfinishedEquation)
                 {
                     var equationStr = TranslateEquation(equationParts[i]);
+                    if (equationStr == null)
+                    {
+                        newElements.Add(new XElement(_oneNs+"T", new XCData(EquationStartEndString + equationParts[i] + EquationStartEndString)));
+                        continue;
+                    }
 
                     //use string modification to get only "<math:mml .... </math:mml>"
                     var startIndex = equationStr.IndexOf(MMLStart, StringComparison.InvariantCultureIgnoreCase);
                     var endIndex = equationStr.IndexOf(MMLEnd, StringComparison.InvariantCultureIgnoreCase);
                     equationStr = equationStr.Substring(startIndex, endIndex - startIndex + MMLEnd.Length);
-                    newContent.AppendFormat("</span><!--[if mathML]>{0}<![endif]--><span>", equationStr);
+
+                    newElements.Add(new XElement(_oneNs + "T", new XCData(String.Format("<!--[if mathML]>{0}<![endif]-->", equationStr))));
                 }
                 else if (isUnfinishedEquation)
-                    newContent.AppendFormat(EquationStartEndString + equationParts[i]);
+                    newElements.Add(new XElement(_oneNs + "T", new XCData(EquationStartEndString + equationParts[i])));
                 else
-                    newContent.AppendFormat(equationParts[i]);
+                    newElements.Add(new XElement(_oneNs + "T", new XCData(equationParts[i])));
             }
-            content.Value = "<span>"+newContent.ToString()+"</span>";
+            content.ReplaceWith(newElements);
         } 
 
-        public static string TranslateEquation(string eq)
+        public string TranslateEquation(string eq)
         {
             var inputFile = Path.GetTempPath() + Guid.NewGuid() + ".tex";
             using (var fs = new StreamWriter(inputFile,false))
@@ -148,6 +163,15 @@ namespace OneNoteMathType
             ce.Convert(new EquationInputFileText(inputFile, ClipboardFormats.cfTeX),
                        new EquationOutputFileText(outputFile, "MathML2 (DataObject).tdl"));
             string result;
+            if (!File.Exists(outputFile))
+            {
+                if (!_ballonErrorShown)
+                {
+                    _ballonErrorShown = true;
+                    notifyIcon1.ShowBalloonTip(5000, "Something went wrong", "MathType API throw an error while converting your OneNote page. Please try again or check MathType.", ToolTipIcon.Error);
+                }
+                return null;
+            }
             using (var fs = new StreamReader(outputFile, true))
             {
                  result = fs.ReadToEnd();
