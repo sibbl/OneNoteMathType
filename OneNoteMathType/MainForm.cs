@@ -13,6 +13,7 @@ using System.Windows.Forms;
 using System.Xml.Linq;
 using MTSDKDN;
 using on = Microsoft.Office.Interop.OneNote;
+using System.Net;
 
 namespace OneNoteMathType
 {
@@ -153,6 +154,7 @@ namespace OneNoteMathType
 
         public string TranslateEquation(string eq)
         {
+            eq = WebUtility.HtmlDecode(eq);
             var inputFile = Path.GetTempPath() + Guid.NewGuid() + ".tex";
             using (var fs = new StreamWriter(inputFile,false))
             {
